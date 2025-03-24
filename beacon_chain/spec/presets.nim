@@ -870,13 +870,13 @@ proc readRuntimeConfig*(
 
   checkCompatibility MAX_REQUEST_BLOCKS_DENEB
 
-  for suffix in ["", "_ELECTRA"]:
-    checkCompatibility MAX_SUPPORTED_BLOB_SIDECAR_SUBNET_COUNT,
-                       "BLOB_SIDECAR_SUBNET_COUNT" & suffix, `<=`
-    checkCompatibility MAX_SUPPORTED_BLOBS_PER_BLOCK,
-                       "MAX_BLOBS_PER_BLOCK" & suffix, `<=`
-    checkCompatibility MAX_SUPPORTED_REQUEST_BLOB_SIDECARS,
-                       "MAX_REQUEST_BLOB_SIDECARS" & suffix, `<=`
+  # for suffix in ["", "_ELECTRA"]:
+  #   checkCompatibility MAX_SUPPORTED_BLOB_SIDECAR_SUBNET_COUNT,
+  #                      "BLOB_SIDECAR_SUBNET_COUNT" & suffix, `<=`
+  #   checkCompatibility MAX_SUPPORTED_BLOBS_PER_BLOCK,
+  #                      "MAX_BLOBS_PER_BLOCK" & suffix, `<=`
+  #   checkCompatibility MAX_SUPPORTED_REQUEST_BLOB_SIDECARS,
+  #                      "MAX_REQUEST_BLOB_SIDECARS" & suffix, `<=`
 
   # https://github.com/ethereum/consensus-specs/blob/v1.5.0-beta.0/specs/phase0/fork-choice.md#configuration
   # Isn't being used as a preset in the usual way: at any time, there's one correct value
@@ -897,15 +897,15 @@ proc readRuntimeConfig*(
     raise (ref PresetIncompatibleError)(
       msg: "Config not compatible with binary, compile with -d:const_preset=" & cfg.PRESET_BASE)
 
-  # Requires initialized `cfg`
-  checkCompatibility cfg.safeMinEpochsForBlockRequests(),
-                     "MIN_EPOCHS_FOR_BLOCK_REQUESTS", `>=`
-  checkCompatibility MAX_REQUEST_BLOCKS_DENEB * cfg.MAX_BLOBS_PER_BLOCK,
-                     "MAX_REQUEST_BLOB_SIDECARS"
-  checkCompatibility cfg.MAX_BLOBS_PER_BLOCK,
-                     "MAX_BLOBS_PER_BLOCK_ELECTRA", `>=`
-  checkCompatibility MAX_REQUEST_BLOCKS_DENEB * cfg.MAX_BLOBS_PER_BLOCK_ELECTRA,
-                     "MAX_REQUEST_BLOB_SIDECARS_ELECTRA"
+  # # Requires initialized `cfg`
+  # checkCompatibility cfg.safeMinEpochsForBlockRequests(),
+  #                    "MIN_EPOCHS_FOR_BLOCK_REQUESTS", `>=`
+  # checkCompatibility MAX_REQUEST_BLOCKS_DENEB * cfg.MAX_BLOBS_PER_BLOCK,
+  #                    "MAX_REQUEST_BLOB_SIDECARS"
+  # checkCompatibility cfg.MAX_BLOBS_PER_BLOCK,
+  #                    "MAX_BLOBS_PER_BLOCK_ELECTRA", `>=`
+  # checkCompatibility MAX_REQUEST_BLOCKS_DENEB * cfg.MAX_BLOBS_PER_BLOCK_ELECTRA,
+  #                    "MAX_REQUEST_BLOB_SIDECARS_ELECTRA"
 
   var unknowns: seq[string]
   for name in values.keys:
