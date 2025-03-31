@@ -464,8 +464,8 @@ proc initFullNode(
           else:
             let blobs = blobQuarantine[].popBlobs(forkyBlck.root, forkyBlck)
             await blockProcessor[].addBlock(MsgSource.gossip, signedBlock,
-                                             Opt.some(blobs),
-                                             maybeFinalized = maybeFinalized)
+                                      Opt.some(blobs),
+                                      maybeFinalized = maybeFinalized)
 
         else:
           await blockProcessor[].addBlock(MsgSource.gossip, signedBlock,
@@ -503,6 +503,7 @@ proc initFullNode(
     syncManager = newSyncManager[Peer, PeerId](
       node.network.peerPool,
       dag.cfg.DENEB_FORK_EPOCH,
+      dag.cfg.FULU_FORK_EPOCH,
       dag.cfg.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS,
       dag.cfg.MAX_BLOBS_PER_BLOCK_ELECTRA,
       SyncQueueKind.Forward, getLocalHeadSlot,
@@ -514,6 +515,7 @@ proc initFullNode(
     backfiller = newSyncManager[Peer, PeerId](
       node.network.peerPool,
       dag.cfg.DENEB_FORK_EPOCH,
+      dag.cfg.FULU_FORK_EPOCH,
       dag.cfg.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS,
       dag.cfg.MAX_BLOBS_PER_BLOCK_ELECTRA,
       SyncQueueKind.Backward, getLocalHeadSlot,
@@ -530,6 +532,7 @@ proc initFullNode(
     untrustedManager = newSyncManager[Peer, PeerId](
       node.network.peerPool,
       dag.cfg.DENEB_FORK_EPOCH,
+      dag.cfg.FULU_FORK_EPOCH,
       dag.cfg.MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS,
       dag.cfg.MAX_BLOBS_PER_BLOCK_ELECTRA,
       SyncQueueKind.Backward, getLocalHeadSlot,
@@ -2094,6 +2097,33 @@ proc installMessageValidators(node: BeaconNode) =
             return toValidationResult(
               await node.processor.processBlsToExecutionChange(
                 MsgSource.gossip, msg)))
+
+      when consensusFork >= ConsensusFork.Electra:
+        # blob_sidecar_{subnet_id}
+        # https://github.com/ethereum/consensus-specs/blob/v1.4.0-beta.5/specs/deneb/p2p-interface.md#blob_sidecar_subnet_id
+        let subnets =
+          when consensusFork >= ConsensusFork.Electra:
+            node.dag.cfg.BLOB_SIDECAR_SUBNET_COUNT_ELECTRA
+          else:
+            node.dag.cfg.BLOB_SIDECAR_SUBNET_COUNT
+        # It's safe to try as many times to fetch EL blobs as
+        # there are blob subnets.
+        for it in 0.BlobId ..< subnets.BlobId:
+          closureScope:  # Needed for inner `proc`; don't lift it out of loop.
+            let subnet_id = it
+            node.network.addAsyncValidator(
+              getBlobSidecarTopic(digest, subnet_id), proc (
+                blobSidecar: deneb.BlobSidecar
+              ): Future[ValidationResult] {.async: (raises: [CancelledError]).} =
+                let
+                  fut1 =
+                    (node.processor.processBlobSidecarFromEL(blobSidecar))
+                  fut2 =
+                    (node.processor.processBlobSidecar(MsgSource.gossip,
+                                                       blobSidecar,
+                                                       subnet_id))
+
+                return await toValidationRace(fut1, fut2))
 
       when consensusFork >= ConsensusFork.Deneb:
         # blob_sidecar_{subnet_id}
