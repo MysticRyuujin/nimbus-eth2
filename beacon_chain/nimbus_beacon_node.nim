@@ -1322,9 +1322,12 @@ proc addFuluMessageHandlers(
       node.network.nodeId,
       targetSubnets.uint64)
 
+  echo "FOO1: ", targetSubnets, "; ", custody
+
   for i in custody:
     let topic = getDataColumnSidecarTopic(forkDigest, i)
     node.network.subscribe(topic, basicParams())
+    echo "FOO2: ", topic
 
 proc addGloasMessageHandlers(
     node: BeaconNode, forkDigest: ForkDigest, slot: Slot) =
