@@ -15,7 +15,8 @@ import
   toml_serialization, toml_serialization/lexer,
   toml_serialization/std/net as confTomlNet,
   toml_serialization/std/uri as confTomlUri,
-  ../spec/engine_authentication
+  ../spec/engine_authentication,
+  json_rpc/rpcchannels
 
 from std/strutils import toLowerAscii, split, startsWith
 
@@ -34,12 +35,14 @@ type
     url: string
     jwtSecret: Opt[JwtSharedKey]
     roles: EngineApiRoles
+    channel*: Opt[RpcChannelPtrs]
 
   EngineApiUrlConfigValue* = object
     url*: string # TODO: Use the URI type here
     jwtSecret* {.serializedFieldName: "jwt-secret".}: Option[string]
     jwtSecretFile* {.serializedFieldName: "jwt-secret-file".}: Option[InputFile]
     roles*: Option[EngineApiRoles]
+    channel* {.dontSerialize.}: Opt[RpcChannelPtrs]
 
 const
   defaultEngineApiRoles* = { DepositSyncing, BlockValidation, BlockProduction }
@@ -55,6 +58,11 @@ proc init*(T: type EngineApiUrl,
            jwtSecret = Opt.none JwtSharedKey,
            roles = defaultEngineApiRoles): T =
   T(url: url, jwtSecret: jwtSecret, roles: roles)
+
+proc init*(T: type EngineApiUrl,
+           channel: RpcChannelPtrs,
+           roles = defaultEngineApiRoles): T =
+  T(channel: Opt.some channel, roles: roles)
 
 func url*(engineUrl: EngineApiUrl): string =
   engineUrl.url
@@ -171,23 +179,28 @@ func getDefaultEngineApiUrl*(x: Option[InputFile]): EngineApiUrlConfigValue =
 
 proc toFinalUrl*(confValue: EngineApiUrlConfigValue,
                  confJwtSecret: Opt[JwtSharedKey]): Result[EngineApiUrl, cstring] =
-  if confValue.jwtSecret.isSome and confValue.jwtSecretFile.isSome:
-    return err "The options `jwtSecret` and `jwtSecretFile` should not be specified together"
-
-  let jwtSecret = if confValue.jwtSecret.isSome:
-    Opt.some(? parseJwtSharedKey(confValue.jwtSecret.get))
-  elif confValue.jwtSecretFile.isSome:
-    Opt.some(? loadJwtSecretFile(confValue.jwtSecretFile.get))
+  if confValue.channel.isSome:
+    ok EngineApiUrl.init(
+      confValue.channel[],
+      roles = confValue.roles.get(defaultEngineApiRoles))
   else:
-    confJwtSecret
+    if confValue.jwtSecret.isSome and confValue.jwtSecretFile.isSome:
+      return err "The options `jwtSecret` and `jwtSecretFile` should not be specified together"
 
-  var url = confValue.url
-  fixupWeb3Urls(url)
+    let jwtSecret = if confValue.jwtSecret.isSome:
+      Opt.some(? parseJwtSharedKey(confValue.jwtSecret.get))
+    elif confValue.jwtSecretFile.isSome:
+      Opt.some(? loadJwtSecretFile(confValue.jwtSecretFile.get))
+    else:
+      confJwtSecret
 
-  ok EngineApiUrl.init(
-    url = url,
-    jwtSecret = jwtSecret,
-    roles = confValue.roles.get(defaultEngineApiRoles))
+    var url = confValue.url
+    fixupWeb3Urls(url)
+
+    ok EngineApiUrl.init(
+      url = url,
+      jwtSecret = jwtSecret,
+      roles = confValue.roles.get(defaultEngineApiRoles))
 
 proc loadJwtSecret*(jwtSecret: Opt[InputFile]): Opt[JwtSharedKey] =
   if jwtSecret.isSome:
