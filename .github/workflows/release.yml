@@ -6,6 +6,9 @@
 # at your option. This file may not be copied, modified, or distributed except according to those terms.
 
 on:
+  push:
+    branches:
+      - M70
   workflow_dispatch:
 
 name: Upload Release Asset
