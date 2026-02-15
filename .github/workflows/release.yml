@@ -6,9 +6,7 @@
 # at your option. This file may not be copied, modified, or distributed except according to those terms.
 
 on:
-  push:
-    tags:
-    - 'v*' # "v1.2.3"
+  workflow_dispatch:
 
 name: Upload Release Asset
 
@@ -62,14 +60,12 @@ jobs:
           mv ${{ steps.make_dist.outputs.archive_dir }} ../docker/dist/binaries/nimbus-eth2
           cd ../docker/dist/binaries
           REFNAME="${{ github.ref }}"
-          TAG="${REFNAME#refs/tags/}"
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.amd64 -t statusim/nimbus-eth2:amd64-${TAG} -t statusim/nimbus-eth2:amd64-latest .
+          TAG="testing"
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.amd64 --platform linux/amd64 -t statusim/nimbus-eth2:amd64-${TAG} .
           docker push statusim/nimbus-eth2:amd64-${TAG}
-          docker push statusim/nimbus-eth2:amd64-latest
 
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.amd64 -t statusim/nimbus-validator-client:amd64-${TAG} -t statusim/nimbus-validator-client:amd64-latest .
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.amd64 --platform linux/amd64 -t statusim/nimbus-validator-client:amd64-${TAG} .
           docker push statusim/nimbus-validator-client:amd64-${TAG}
-          docker push statusim/nimbus-validator-client:amd64-latest
       - name: Setup ruby # Needed for fpm
         uses: ruby/setup-ruby@v1
         with:
@@ -143,16 +139,14 @@ jobs:
           mv ${{ steps.make_dist.outputs.archive_dir }} ../docker/dist/binaries/nimbus-eth2
           cd ../docker/dist/binaries
           REFNAME="${{ github.ref }}"
-          TAG="${REFNAME#refs/tags/}"
+          TAG="testing"
           cp -a /usr/bin/qemu-aarch64-static .
 
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.arm64 -t statusim/nimbus-eth2:arm64-${TAG} -t statusim/nimbus-eth2:arm64-latest .
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.arm64 --platform linux/arm64 -t statusim/nimbus-eth2:arm64-${TAG} .
           docker push statusim/nimbus-eth2:arm64-${TAG}
-          docker push statusim/nimbus-eth2:arm64-latest
 
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.arm64 -t statusim/nimbus-validator-client:arm64-${TAG} -t statusim/nimbus-validator-client:arm64-latest .
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.arm64 --platform linux/arm64 -t statusim/nimbus-validator-client:arm64-${TAG} .
           docker push statusim/nimbus-validator-client:arm64-${TAG}
-          docker push statusim/nimbus-validator-client:arm64-latest
       - name: Setup ruby # Needed for fpm
         uses: ruby/setup-ruby@v1
         with:
@@ -226,15 +220,13 @@ jobs:
           mv ${{ steps.make_dist.outputs.archive_dir }} ../docker/dist/binaries/nimbus-eth2
           cd ../docker/dist/binaries
           REFNAME="${{ github.ref }}"
-          TAG="${REFNAME#refs/tags/}"
+          TAG="testing"
           cp -a /usr/bin/qemu-arm-static .
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.arm -t statusim/nimbus-eth2:arm-${TAG} -t statusim/nimbus-eth2:arm-latest .
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.bn.arm --platform linux/arm/v7 -t statusim/nimbus-eth2:arm-${TAG} .
           docker push statusim/nimbus-eth2:arm-${TAG}
-          docker push statusim/nimbus-eth2:arm-latest
 
-          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.arm -t statusim/nimbus-validator-client:arm-${TAG} -t statusim/nimbus-validator-client:arm-latest .
+          DOCKER_BUILDKIT=1 docker build -f Dockerfile.vc.arm --platform linux/arm/v7 -t statusim/nimbus-validator-client:arm-${TAG} .
           docker push statusim/nimbus-validator-client:arm-${TAG}
-          docker push statusim/nimbus-validator-client:arm-latest
 
       - name: Setup ruby # Needed for fpm
         uses: ruby/setup-ruby@v1
@@ -418,20 +410,12 @@ jobs:
       - name: Build multi-arch Docker images
         run: |
           REFNAME="${{ github.ref }}"
-          TAG="${REFNAME#refs/tags/}"
+          TAG="testing"
           docker buildx imagetools create -t statusim/nimbus-eth2:multiarch-${TAG} \
             statusim/nimbus-eth2:amd64-${TAG} \
             statusim/nimbus-eth2:arm64-${TAG} \
             statusim/nimbus-eth2:arm-${TAG}
-          docker buildx imagetools create -t statusim/nimbus-eth2:multiarch-latest \
-            statusim/nimbus-eth2:amd64-latest \
-            statusim/nimbus-eth2:arm64-latest \
-            statusim/nimbus-eth2:arm-latest
           docker buildx imagetools create -t statusim/nimbus-validator-client:multiarch-${TAG} \
             statusim/nimbus-validator-client:amd64-${TAG} \
             statusim/nimbus-validator-client:arm64-${TAG} \
             statusim/nimbus-validator-client:arm-${TAG}
-          docker buildx imagetools create -t statusim/nimbus-validator-client:multiarch-latest \
-            statusim/nimbus-validator-client:amd64-latest \
-            statusim/nimbus-validator-client:arm64-latest \
-            statusim/nimbus-validator-client:arm-latest
