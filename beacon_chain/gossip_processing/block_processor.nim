@@ -427,6 +427,22 @@ proc addBlock*(
   fromGossip = false,
 ): Future[Result[void, VerifierError]] {.async: (raises: [CancelledError]).}
 
+proc enqueueFullBlock(
+    self: ref BlockProcessor,
+    src: MsgSource,
+    blck: gloas.SignedBeaconBlock | heze.SignedBeaconBlock,
+    maybeFinalized = false,
+    validationDur = Duration()) {.async.} =
+  ## Enqueue Gloas and later payload automatically once block is validated and
+  ## imported. Only firing the payload processing here for a better control over
+  ## quarantined items for syncing.
+
+  let res = await self.addBlock(
+    src, blck, noSidecars, maybeFinalized, validationDur,
+    fromGossip = src == MsgSource.gossip)
+  if res.isOk():
+    self.enqueuePayload(blck)
+
 proc enqueueBlock*(
     self: ref BlockProcessor,
     src: MsgSource,
@@ -451,9 +467,13 @@ proc enqueueBlock*(
   #
   # As such, `enqueueBlock` is the entry point for gossip processing; blocks
   # from sync/request managers reach `addBlock` directly.
-  discard self.addBlock(
-    src, blck, sidecarsOpt, maybeFinalized, validationDur,
-    fromGossip = src == MsgSource.gossip)
+  when typeof(blck).kind >= ConsensusFork.Gloas:
+    discard self.enqueueFullBlock(
+      src, blck, maybeFinalized, validationDur)
+  else:
+    discard self.addBlock(
+      src, blck, sidecarsOpt, maybeFinalized, validationDur,
+      fromGossip = src == MsgSource.gossip)
 
 proc enqueueQuarantine(self: ref BlockProcessor, parent: BlockRef) =
   ## Enqueue the blocks that are no longer orphans as a result of `parent` being
@@ -802,11 +822,6 @@ proc storeBlock(
     blck = shortLog(blck),
     validationDur, queueDur, newPayloadDur, addHeadBlockDur, updateHeadDur
 
-  when consensusFork >= ConsensusFork.Gloas:
-    # Enqueue payload here instead of `addBlock` for the consistency of payload
-    # processing with backfilling.
-    self.enqueuePayload(signedBlock)
-
   ok(blck)
 
 proc addBlock*(
@@ -982,7 +997,6 @@ proc storePayload(
   let
     dag = self.consensusManager.dag
     wallTime = self.getBeaconTime()
-    wallSlot = wallTime.slotOrZero(dag.timeParams)
     deadline = sleepAsync(nextSlotDeadline(wallTime, dag))
 
   let

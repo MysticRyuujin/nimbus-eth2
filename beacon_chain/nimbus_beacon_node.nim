@@ -668,9 +668,15 @@ proc initFullNode(
         else:
           {.error: "Unkown fork: " & $consensusFork.}
 
-        await blockProcessor.addBlock(
+        let bres = await blockProcessor.addBlock(
           MsgSource.sync, forkyBlck, sidecarsOpt, maybeFinalized
         )
+
+        when consensusFork >= ConsensusFork.Gloas:
+          if bres.isOk():
+            blockProcessor.enqueuePayload(forkyBlck)
+        bres
+
     rmanBlockLoader = proc(
         blockRoot: Eth2Digest): Opt[ForkedTrustedSignedBeaconBlock] =
       dag.getForkedBlock(blockRoot)
