@@ -1119,20 +1119,20 @@ proc enqueuePayload*(self: ref BlockProcessor, blck: gloas.SignedBeaconBlock) =
       # We have not received the envelope yet so mark it as missing.
       self.envelopeQuarantine[].addMissing(blck.root)
       return
-    sidecarsOpt =
-      block:
-        let sidecarsOpt =
-          if bid.message.blob_kzg_commitments.len() == 0:
-            Opt.some(default(gloas.DataColumnSidecars))
-          else:
-            self.gloasColumnQuarantine[].popSidecars(blck.root)
-        if sidecarsOpt.isNone():
-          # As sidecars are missing, put envelope back to quarantine.
-          self.consensusManager.quarantine[].addSidecarless(blck)
-          self.envelopeQuarantine[].addOrphan(
-            self.consensusManager.dag.finalizedHead.slot, envelope)
-          return
-        sidecarsOpt
+    sidecarsOpt = block:
+      let sidecarsOpt =
+        if bid.message.blob_kzg_commitments.len() == 0:
+          Opt.some(default(gloas.DataColumnSidecars))
+        else:
+          self.gloasColumnQuarantine[].popSidecars(blck.root)
+      if sidecarsOpt.isNone():
+        # As sidecars are missing, put envelope back to quarantine.
+        discard self.consensusManager.quarantine[].addSidecarless(
+          self.consensusManager.dag.finalizedHead.slot, blck)
+        self.envelopeQuarantine[].addOrphan(
+          self.consensusManager.dag.finalizedHead.slot, envelope)
+        return
+      sidecarsOpt
 
   discard self.addPayload(blck, envelope, sidecarsOpt)
 

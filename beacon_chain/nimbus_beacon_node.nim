@@ -620,21 +620,60 @@ proc initFullNode(
       envelopeQuarantine, getBeaconTime, config.invalidBlockRoots)
     blockVerifier = proc(signedBlock: ForkedSignedBeaconBlock,
                          blobs: Opt[BlobSidecars], maybeFinalized: bool):
-        Future[Result[void, VerifierError]] {.async: (raises: [CancelledError], raw: true).} =
+        Future[Result[void, VerifierError]] {.async: (raises: [CancelledError]).} =
       withBlck(signedBlock):
-        when consensusFork in ConsensusFork.Fulu .. ConsensusFork.Heze:
+        when consensusFork in ConsensusFork.Gloas .. ConsensusFork.Heze:
+          # In syncing, we process the parent payload when there is a block
+          # built on FULL with the execution parent.
+          #
+          # For missing or error in the parent envelope, we will not return
+          # error as it may come from a different peer, to avoid falsely
+          # downscoring a good peer.
+          let executionParent = block:
+            let parent = dag.getBlockRef(forkyBlck.message.parent_root).valueOr:
+              return err(VerifierError.MissingParent)
+            dag.executionParent(
+                parent,
+                forkyBlck.message.body.signed_execution_payload_bid.message.parent_block_hash).valueOr:
+              return err(VerifierError.MissingParent)
+
+          # Ignore if the execution parent is pre-Gloas.
+          if executionParent.slot.epoch() >= dag.cfg.GLOAS_FORK_EPOCH:
+            let envelope = envelopeQuarantine[].popOrphan(executionParent.root)
+            if envelope.isSome():
+              let parentBlck = dag.getForkedBlock(executionParent.bid).valueOr:
+                return err(VerifierError.Invalid)
+              withBlck(parentBlck):
+                when consensusFork >= ConsensusFork.Gloas:
+                  let
+                    bid = forkyBlck.message.body.signed_execution_payload_bid
+                    sidecarsOpt =
+                      if bid.message.blob_kzg_commitments.len() == 0:
+                        Opt.some(default(gloas.DataColumnSidecars))
+                      else:
+                        gloasColumnQuarantine[].popSidecars(forkyBlck.root)
+                    eres = await blockProcessor.addPayload(
+                      forkyBlck.asSigned(), envelope.get(), sidecarsOpt)
+                  if eres.isErr():
+                    debug "Failed to process parent payload in syncing",
+                      executionParent = shortLog(executionParent)
+            # We haven't got the parent envelope, so try to request by root.
+            else:
+              debugGloasComment("request byRange instead")
+              envelopeQuarantine[].addMissing(executionParent.root)
+
+        when consensusFork in ConsensusFork.Gloas .. ConsensusFork.Heze:
+          # Disable sidecars processing at block time.
+          const sidecarsOpt = noSidecars
+        elif consensusFork == ConsensusFork.Fulu:
           # TODO document why there are no columns here
-          when consensusFork >= ConsensusFork.Gloas:
-            # Disable sidecars processing at block time.
-            const sidecarsOpt = noSidecars
-          else:
-            let sidecarsOpt = Opt.none(fulu.DataColumnSidecars)
+          let sidecarsOpt = Opt.none(fulu.DataColumnSidecars)
         elif consensusFork in ConsensusFork.Phase0 .. ConsensusFork.Electra:
           const sidecarsOpt = noSidecars
         else:
           {.error: "Unkown fork: " & $consensusFork.}
 
-        blockProcessor.addBlock(
+        await blockProcessor.addBlock(
           MsgSource.gossip, forkyBlck, sidecarsOpt, maybeFinalized)
 
     untrustedBlockVerifier =
@@ -693,48 +732,50 @@ proc initFullNode(
         blockRef = dag.getBlockRef(blockRoot).valueOr:
           # Return ok() as we may not have the block yet.
           return ok()
-        blck =
-          block:
-            let forkedBlock = dag.getForkedBlock(blockRef.bid).valueOr:
-              # We have checked that the block exists in the chain. There might be
-              # issues in reading the database or data in the memory is broken.
-              # Since no result is returned, we log for investigation.
-              debug "Enqueue payload from envelope. Block is missing in DB",
+        blck = block:
+          let forkedBlock = dag.getForkedBlock(blockRef.bid).valueOr:
+            # We have checked that the block exists in the chain. There might be
+            # issues in reading the database or data in the memory is broken.
+            # Since no result is returned, we log for investigation.
+            debug "Enqueue payload from envelope. Block is missing in DB",
+              bid = shortLog(blockRef.bid)
+            return err(VerifierError.Invalid)
+          withBlck(forkedBlock):
+            when consensusFork == ConsensusFork.Heze:
+              debugHezeComment "..."
+              return err(VerifierError.Duplicate)
+            elif consensusFork == ConsensusFork.Gloas:
+              forkyBlck.asSigned()
+            else:
+              # Incorrect fork which shouldn't be happening.
+              debug "Enqueue payload from envelope. Block is in incorrect fork",
                 bid = shortLog(blockRef.bid)
-              return err(VerifierError.Invalid)
-            withBlck(forkedBlock):
-              when consensusFork == ConsensusFork.Heze:
-                debugHezeComment "..."
-                return err(VerifierError.Duplicate)
-              elif consensusFork == ConsensusFork.Gloas:
-                forkyBlck.asSigned()
-              else:
-                # Incorrect fork which shouldn't be happening.
-                debug "Enqueue payload from envelope. Block is in incorrect fork",
-                  bid = shortLog(blockRef.bid)
-                return err(VerifierError.UnviableFork)
+              return err(VerifierError.UnviableFork)
         envelope = envelopeQuarantine[].popOrphan(blck).valueOr:
           # At this point, the signedEnvelope is from a different builder since
           # the block should be the source of truth. We should notify receiving
           # bad value from the peer.
           return err(VerifierError.Invalid)
-        sidecarsOpt =
-          block:
-            template bid(): auto =
-              blck.message.body.signed_execution_payload_bid
-            let sidecarsOpt =
-              if bid.message.blob_kzg_commitments.len() == 0:
-                Opt.some(default(gloas.DataColumnSidecars))
-              else:
-                gloasColumnQuarantine[].popSidecars(blockRoot)
-            if sidecarsOpt.isNone():
-              # As sidecars are missing, put envelope back to quarantine.
-              consensusManager.quarantine[].addSidecarless(blck)
-              envelopeQuarantine[].addOrphan(dag.finalizedHead.slot, envelope)
-              # Return ok() as columns may arrive late.
-              return ok()
-            sidecarsOpt
+        sidecarsOpt = block:
+          template bid(): auto =
+            blck.message.body.signed_execution_payload_bid
+          let sidecarsOpt =
+            if bid.message.blob_kzg_commitments.len() == 0:
+              Opt.some(default(gloas.DataColumnSidecars))
+            else:
+              gloasColumnQuarantine[].popSidecars(blockRoot)
+          if sidecarsOpt.isNone():
+            # As sidecars are missing, put envelope back to quarantine.
+            consensusManager.quarantine[].addSidecarless(blck)
+            envelopeQuarantine[].addOrphan(dag.finalizedHead.slot, envelope)
+            # Return ok() as columns may arrive late.
+            return ok()
+          sidecarsOpt
       await blockProcessor.addPayload(blck, envelope, sidecarsOpt)
+    envelopeVerifier = proc(envelope: ref SignedExecutionPayloadEnvelope) =
+      envelopeQuarantine[].addOrphan(dag.finalizedHead.slot, envelope[])
+    untrustedEnveloperVerifier = proc(envelope: ref SignedExecutionPayloadEnvelope) =
+      debugGloasComment("")
     rmanEnvelopeLoader = proc(blockRoot: Eth2Digest):
         Opt[gloas.TrustedSignedExecutionPayloadEnvelope] =
       dag.db.getExecutionPayloadEnvelope(blockRoot)
@@ -771,7 +812,7 @@ proc initFullNode(
       SyncQueueKind.Forward, getLocalHeadSlot,
       getLocalWallSlot, getFirstSlotAtFinalizedEpoch, getBackfillSlot,
       getFrontfillSlot, isWithinWeakSubjectivityPeriod,
-      dag.tail.slot, blockVerifier, forkAtEpoch,
+      dag.tail.slot, blockVerifier, envelopeVerifier, forkAtEpoch,
       shutdownEvent = node.shutdownEvent,
       flags = syncManagerFlags)
     backfiller = newSyncManager[Peer, PeerId](
@@ -779,7 +820,8 @@ proc initFullNode(
       SyncQueueKind.Backward, getLocalHeadSlot,
       getLocalWallSlot, getFirstSlotAtFinalizedEpoch, getBackfillSlot,
       getFrontfillSlot, isWithinWeakSubjectivityPeriod,
-      dag.backfill.slot, blockVerifier, forkAtEpoch, maxHeadAge = 0,
+      dag.backfill.slot, blockVerifier, envelopeVerifier, forkAtEpoch,
+      maxHeadAge = 0,
       shutdownEvent = node.shutdownEvent,
       flags = syncManagerFlags)
     clistPivotSlot =
@@ -793,7 +835,8 @@ proc initFullNode(
       SyncQueueKind.Backward, getLocalHeadSlot,
       getLocalWallSlot, getFirstSlotAtFinalizedEpoch, getUntrustedBackfillSlot,
       getFrontfillSlot, isWithinWeakSubjectivityPeriod,
-      clistPivotSlot, untrustedBlockVerifier, forkAtEpoch, maxHeadAge = 0,
+      clistPivotSlot, untrustedBlockVerifier, untrustedEnveloperVerifier,
+      forkAtEpoch, maxHeadAge = 0,
       shutdownEvent = node.shutdownEvent,
       flags = syncManagerFlags)
     router = (ref MessageRouter)(

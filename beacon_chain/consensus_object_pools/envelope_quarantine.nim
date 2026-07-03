@@ -80,6 +80,14 @@ func popOrphan*(
     blck.message.body.signed_execution_payload_bid.message.builder_index
   self.orphans.pop((blck.root, bidBuilder))
 
+func popOrphan*(
+    self: var EnvelopeQuarantine, root: Eth2Digest,
+): Opt[SignedExecutionPayloadEnvelope] =
+  for k, e in self.orphans:
+    if k[0] == root:
+      return Opt.some(e)
+  Opt.none(SignedExecutionPayloadEnvelope)
+
 func hasOrphan*(self: EnvelopeQuarantine, root: Eth2Digest): bool =
   for k, _ in self.orphans:
     if k[0] == root:
