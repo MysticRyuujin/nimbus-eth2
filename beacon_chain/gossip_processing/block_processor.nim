@@ -18,8 +18,8 @@ from std/sequtils import anyIt, filterIt
 from ../consensus_object_pools/consensus_manager import
   ConsensusManager, to, updateHead, updateExecutionHead
 from ../consensus_object_pools/blockchain_dag import
-  getBlockRef, getForkedBlock, getProposer, forkAtEpoch, loadExecutionBlockHash,
-  markExecutionValid, validatorKey, is_optimistic
+  executionParent, getBlockRef, getForkedBlock, getProposer, forkAtEpoch,
+  loadExecutionBlockHash, markExecutionValid, validatorKey, is_optimistic
 from ../beacon_clock import GetBeaconTimeFn, toFloatSeconds
 from ../consensus_object_pools/block_dag import
   BlockRef, OptimisticStatus, executionValid, root, shortLog, slot
@@ -303,7 +303,7 @@ proc storeBackfillBlock(
       # TODO track invalid blocks once we can differentiate between invalid
       #      proposer signature and other errors
       res
-    of VerifierError.Duplicate:
+    of VerifierError.Duplicate, VerifierError.MissingParentPayload:
       res
   else:
     when consensusFork <= ConsensusFork.Fulu:
@@ -956,7 +956,7 @@ proc addBlock*(
       #   .toVerifierError()
       # )
       err(res.error())
-    of VerifierError.Duplicate:
+    of VerifierError.Duplicate, VerifierError.MissingParentPayload:
       err(res.error())
 
 proc storeBackfillPayload(
@@ -1065,6 +1065,17 @@ proc addPayload*(
       if sidecarsOpt.isSome():
         self.gloasColumnQuarantine[].put(
           signedBlock.root, sidecarsOpt.get(), verified = false)
+    of VerifierError.MissingParentPayload:
+      let executionParent = block:
+        let parent = self.consensusManager.dag.getBlockRef(
+          signedEnvelope.message.parent_beacon_block_root)
+        if parent.isSome():
+          self.consensusManager.dag.executionParent(
+            parent.get(), signedEnvelope.message.payload.parent_hash)
+        else:
+          Opt.none(BlockRef)
+      if executionParent.isSome():
+        self.envelopeQuarantine[].addMissing(executionParent.get().root)
     of VerifierError.Invalid, VerifierError.UnviableFork:
       # The block is verified and has added to the DAG, but the envelope isn't
       # valid. It should be marked as invalid so that we can ignore it from

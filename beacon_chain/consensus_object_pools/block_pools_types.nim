@@ -38,6 +38,11 @@ type
       ## or not - it'll go into the quarantine and be reexamined when the parent
       ## appears or be discarded if finality obsoletes it
 
+    MissingParentPayload
+      ## We want to request payload/envelope only when we found that it is
+      ## missing. It helps to distinguish between missing parent block and
+      ## parent envelope on handling the error since Gloas.
+
     UnviableFork
       ## Value is from a history / fork that does not include our most current
       ## finalized checkpoint
