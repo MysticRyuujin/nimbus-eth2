@@ -246,6 +246,18 @@ proc checkHeadBlock*(
 
     return err(VerifierError.Invalid)
 
+  when typeof(signedBlock).kind >= ConsensusFork.Gloas:
+    let executionParent = dag.executionParent(
+      parent,
+      blck.body.signed_execution_payload_bid.message.parent_block_hash,
+    ).valueOr:
+      debug "Execution parent unknown"
+      return err(VerifierError.MissingParent)
+
+    if executionParent.optimisticStatus == OptimisticStatus.invalidated:
+      debug "Execution parent invalid"
+      return err(VerifierError.Invalid)
+
   ok(parent)
 
 proc addHeadBlockWithParent*(
@@ -500,9 +512,7 @@ proc addHeadExecutionPayload*(
   template envelopeSlot(): auto = signedEnvelope.message.slot
 
   logScope:
-    blockRoot = shortLog(envelopeBlockRoot)
-    builderIdx = signedEnvelope.message.builder_index
-    slot = envelopeSlot
+    envelope = shortLog(signedEnvelope.message)
     signature = shortLog(signedEnvelope.signature)
 
   const consensusFork = typeof(signedBlock).kind
@@ -525,6 +535,19 @@ proc addHeadExecutionPayload*(
     if blckId.isSome() and blckId.get().slot < dag.finalizedHead.slot:
       return err(VerifierError.UnviableFork)
     return err(VerifierError.MissingParent)
+
+  # Check if the execution parent exists and passes validation.
+  let executionParent = dag.executionParent(
+    blck.parent,
+    signedEnvelope.message.payload.parent_hash,
+  ).valueOr:
+    debug "Execution parent unknown block"
+    return err(VerifierError.MissingParent)
+  if executionParent.slot.epoch() >= dag.cfg.GLOAS_FORK_EPOCH and
+      not dag.db.containsExecutionPayloadEnvelope(executionParent.root):
+    debug "Execution parent unknown payload",
+      executionParent = shortLog(executionParent)
+    return err(VerifierError.MissingParentPayload)
 
   # Load state cache for updateState() and state transition.
   var cache: StateCache
