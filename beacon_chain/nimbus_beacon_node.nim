@@ -31,7 +31,8 @@ import
   ./validators/[keystore_management, beacon_validators],
   ./[
     beacon_node, beacon_node_light_client, buildinfo, deposits, era_db,
-    nimbus_binary_common, process_state, statusbar, trusted_node_sync, wallets]
+    nimbus_binary_common, nimbus_rest_common, process_state, statusbar,
+    trusted_node_sync, wallets]
 
 from std/sequtils import filterIt, mapIt, toSeq
 #from std/strutils import
@@ -508,6 +509,8 @@ proc initFullNode(
     node.eventBus.reorgQueue.emit(eventData)
   proc onFastConfirmation(data: FastConfirmationInfoObject) =
     node.eventBus.fastConfirmationQueue.emit(data)
+  proc onPayloadAttributes(data: EventPayloadAttributesObject) =
+    node.eventBus.payloadAttributesQueue.emit(data)
   proc onEnvelopeAdded(data: SignedExecutionPayloadEnvelope) =
     let optimistic = node.dag.is_optimistic(BlockId(
       root: data.message.beacon_block_root,
@@ -891,6 +894,7 @@ proc initFullNode(
   dag.setHeadCb(onHeadChanged)
   dag.setReorgCb(onChainReorg)
   dag.setFastConfirmationCb(onFastConfirmation)
+  dag.setPayloadAttributesCb(onPayloadAttributes)
   dag.setEnvelopeCb(onEnvelopeAdded)
   dag.setEnvelopeGossipCb(onEnvelopeGossipAdded)
   dag.setEnvelopeAvailableCb(onEnvelopeAvailable)
@@ -1105,7 +1109,7 @@ proc init*(
     nil
 
   let
-    netKeys = getPersistentNetKeys(rng[], config)
+    netKeys = getPersistentNetKeys(rng, config)
     nickname = if config.nodeName == "auto": shortForm(netKeys)
                else: config.nodeName
     network = createEth2Node(
@@ -1416,14 +1420,22 @@ func getSyncCommitteeSubnets(node: BeaconNode, epoch: Epoch): SyncnetBits =
   subnets + node.getNextSyncCommitteeSubnets(epoch)
 
 proc updateDataColumnSidecarHandlers(node: BeaconNode, gossipEpoch: Epoch) =
-  let forkDigest = node.dag.forkDigests[].atEpoch(gossipEpoch, node.dag.cfg)
-  var custody: seq[CustodyIndex]
+  let
+    forkDigest = node.dag.forkDigests[].atEpoch(gossipEpoch, node.dag.cfg)
+    prevSubnets = move(node.lastColumnCustodyIndices)
+  template subscribeSubnets: var seq[CustodyIndex] =
+    node.lastColumnCustodyIndices
 
   for i in node.validatorCustody.custodyGroups():
-    let topic = getDataColumnSidecarTopic(forkDigest, i)
-    node.network.subscribe(topic, basicParams())
-    custody.add(i)
-  node.lastColumnCustodyIndices = custody
+    subscribeSubnets.add(i)
+    if i notin prevSubnets:
+      let topic = getDataColumnSidecarTopic(forkDigest, i)
+      node.network.subscribe(topic, basicParams())
+
+  for i in prevSubnets:
+    if i notin subscribeSubnets:
+      let topic = getDataColumnSidecarTopic(forkDigest, i)
+      node.network.unsubscribe(topic)
 
 proc addAltairMessageHandlers(
     node: BeaconNode, forkDigest: ForkDigest, slot: Slot) =
@@ -1454,9 +1466,17 @@ proc addCapellaMessageHandlers(
     getBlsToExecutionChangeTopic(forkDigest),
     getBlsToExecutionChangeTopicParams(node.dag.timeParams))
 
-proc addGloasMessageHandlers(
+proc addFuluMessageHandlers(
     node: BeaconNode, forkDigest: ForkDigest, slot: Slot) =
   node.addCapellaMessageHandlers(forkDigest, slot)
+
+  for i in node.lastColumnCustodyIndices:
+    let topic = getDataColumnSidecarTopic(forkDigest, i)
+    node.network.subscribe(topic, basicParams())
+
+proc addGloasMessageHandlers(
+    node: BeaconNode, forkDigest: ForkDigest, slot: Slot) =
+  node.addFuluMessageHandlers(forkDigest, slot)
   node.network.subscribe(
     getExecutionPayloadBidTopic(forkDigest),
     getExecutionPayloadBidTopicParams(node.dag.timeParams))
@@ -1686,7 +1706,7 @@ proc updateGossipStatus(node: BeaconNode, slot: Slot) {.async.} =
     addCapellaMessageHandlers,
     addCapellaMessageHandlers,  # deneb (capella handlers, different forkDigest)
     addCapellaMessageHandlers,  # electra (capella handlers, different forkDigest)
-    addCapellaMessageHandlers, # no blobs; updateDataColumnSidecarHandlers for rest
+    addFuluMessageHandlers,
     addGloasMessageHandlers,
     addGloasMessageHandlers  # heze (gloas handlers)
   ]
@@ -1772,6 +1792,10 @@ proc onSlotEnd(node: BeaconNode, slot: Slot) {.async.} =
           .pruneAfterFinalization(
             node.dag.finalizedHead.slot.epoch()
           )
+    node.processor.fuluColumnQuarantine[].pruneAfterFinalization(
+      node.dag.finalizedHead.slot.epoch(), node.dag.needsBackfill())
+    node.processor.gloasColumnQuarantine[].pruneAfterFinalization(
+      node.dag.finalizedHead.slot.epoch(), node.dag.needsBackfill())
     node.processor.quarantine[].pruneAfterFinalization(
       node.dag.finalizedHead.slot.epoch(), node.dag.needsBackfill())
 
@@ -2709,7 +2733,7 @@ proc doRunBeaconNode(
   else:
     node.run(nil)
 
-proc doRecord(config: BeaconNodeConf, rng: var HmacDrbgContext) {.
+proc doRecord(config: BeaconNodeConf, rng: ref HmacDrbgContext) {.
     raises: [CatchableError].} =
   case config.recordCmd:
   of RecordCmd.create:
@@ -2807,7 +2831,7 @@ proc handleStartUpCmd(config: var BeaconNodeConf) {.raises: [CatchableError].} =
   of BNStartUpCmd.beaconNode: doRunBeaconNode(config, rng)
   of BNStartUpCmd.deposits: doDeposits(config, rng[])
   of BNStartUpCmd.wallets: doWallets(config, rng[])
-  of BNStartUpCmd.record: doRecord(config, rng[])
+  of BNStartUpCmd.record: doRecord(config, rng)
   of BNStartUpCmd.web3: doWeb3Cmd(config, rng[])
   of BNStartUpCmd.slashingdb: doSlashingInterchange(config)
   of BNStartUpCmd.trustedNodeSync:

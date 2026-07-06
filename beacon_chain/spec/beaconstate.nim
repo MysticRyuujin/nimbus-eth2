@@ -1799,7 +1799,8 @@ func is_builder_index*(validator_index: uint64): bool =
 # https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.2/specs/gloas/beacon-chain.md#new-get_builder_withdrawals
 func get_builder_withdrawals(
     state: gloas.BeaconState | heze.BeaconState,
-    withdrawal_index: WithdrawalIndex, prior_withdrawals: seq[Withdrawal]):
+    withdrawal_index: WithdrawalIndex, prior_withdrawals: seq[Withdrawal],
+    extra_pending = Opt.none(BuilderPendingWithdrawal)):
     (seq[Withdrawal], WithdrawalIndex, uint64) =
   const withdrawals_limit = MAX_WITHDRAWALS_PER_PAYLOAD - 1
 
@@ -1813,8 +1814,8 @@ func get_builder_withdrawals(
     withdrawals: seq[Withdrawal]
   for withdrawal in state.builder_pending_withdrawals:
     let
-      all_withdrawals = prior_withdrawals & withdrawals
-      has_reached_limit = len(all_withdrawals) == withdrawals_limit
+      all_withdrawals_len = len(prior_withdrawals) + len(withdrawals)
+      has_reached_limit = all_withdrawals_len >= withdrawals_limit
     if has_reached_limit:
       break
 
@@ -1826,6 +1827,21 @@ func get_builder_withdrawals(
       amount: withdrawal.amount))
     withdrawal_index += WithdrawalIndex(1)
     processed_count += 1
+
+  # A pending withdrawal used to predict the next proposal's withdrawals after
+  # parent bid's builder payment's applied by `apply_parent_execution_payload`
+  # before `get_expected_withdrawals` runs in the state transition.
+  extra_pending.isErrOr:
+    if value.amount > 0.Gwei and
+        len(prior_withdrawals) + len(withdrawals) < withdrawals_limit:
+      withdrawals.add(Withdrawal(
+        index: withdrawal_index,
+        validator_index:
+          convert_builder_index_to_validator_index(value.builder_index),
+        address: value.fee_recipient,
+        amount: value.amount))
+      inc withdrawal_index
+      inc processed_count
 
   (withdrawals, withdrawal_index, processed_count)
 
@@ -1998,12 +2014,15 @@ func get_validators_sweep_withdrawals(
 
 # https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.1/specs/gloas/beacon-chain.md#modified-get_expected_withdrawals
 func get_expected_withdrawals*(
-    state: gloas.BeaconState | heze.BeaconState): ExpectedWithdrawals =
-  # [New in Gloas:EIP7732]
+    state: gloas.BeaconState | heze.BeaconState,
+    extra_builder_payment = Opt.none(BuilderPendingWithdrawal)):
+    ExpectedWithdrawals =
   # Get builder withdrawals
+  # `extra_builder_payment` gets proposal withdrawals from pre-proposal states
   let (builder_withdrawals, builder_withdrawal_index,
        processed_builder_withdrawals_count) =
-    get_builder_withdrawals(state, state.next_withdrawal_index, @[])
+    get_builder_withdrawals(
+      state, state.next_withdrawal_index, @[], extra_builder_payment)
   var withdrawals = builder_withdrawals
 
   # Get partial withdrawals
@@ -2242,19 +2261,23 @@ func onboard_builders_from_pending_deposits*(
     bucket_sorted_builders = sortValidatorBuckets(state.builders.asSeq)
   var
     pending_deposits: seq[PendingDeposit]
-    pending_validator_pubkeys: HashSet[ValidatorPubKey]
+    pending_deposits_idx: Table[ValidatorPubKey, int]
+
+  template add_to_pending_deposits(pending_deposit: PendingDeposit) =
+    pending_deposits_idx[pending_deposit.pubkey] = pending_deposits.len
+    pending_deposits.add(pending_deposit)
 
   for deposit in state.pending_deposits:
     # Deposits for existing validators stay in the pending queue
     if findValidatorIndex(
         state.validators.asSeq, bucket_sorted_validators[],
         deposit.pubkey).isSome:
-      pending_deposits.add(deposit)
+      add_to_pending_deposits(deposit)
       continue
 
     # Note that applying a deposit below can mutate the state and may add a
     # builder to the registry. For this reason, the list of builder pubkeys
-    # must be recomputed each iteration (the bucket sort is kept current).
+    # must be recomputed each iteration.
     let opt_builder_index = findValidatorIndex(
       state.builders.asSeq, bucket_sorted_builders[], deposit.pubkey)
 
@@ -2263,20 +2286,25 @@ func onboard_builders_from_pending_deposits*(
       # pending deposit for a new validator with this pubkey, keep this deposit
       # in the pending queue to be applied to that validator later.
       if not is_builder_withdrawal_credential(deposit.withdrawal_credentials):
-        # https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.11/specs/gloas/beacon-chain.md#new-is_pending_validator
+        add_to_pending_deposits(deposit)
+        continue
+
+      # https://github.com/ethereum/consensus-specs/blob/v1.7.0-alpha.11/specs/gloas/beacon-chain.md#new-is_pending_validator
+      try:
+        let pending_deposit =
+          pending_deposits[pending_deposits_idx[deposit.pubkey]]
         if verify_deposit_signature(
             cfg.GENESIS_FORK_VERSION,
             DepositData(
-              pubkey: deposit.pubkey,
-              withdrawal_credentials: deposit.withdrawal_credentials,
-              amount: deposit.amount,
-              signature: deposit.signature)):
-          pending_validator_pubkeys.incl(deposit.pubkey)
-        pending_deposits.add(deposit)
-        continue
-      if deposit.pubkey in pending_validator_pubkeys:
-        pending_deposits.add(deposit)
-        continue
+              pubkey: pending_deposit.pubkey,
+              withdrawal_credentials: pending_deposit.withdrawal_credentials,
+              amount: pending_deposit.amount,
+              signature: pending_deposit.signature)):
+          add_to_pending_deposits(deposit)
+          continue
+      except KeyError:
+        discard
+
       if not verify_deposit_signature(
           cfg.GENESIS_FORK_VERSION,
           DepositData(
@@ -2285,6 +2313,7 @@ func onboard_builders_from_pending_deposits*(
             amount: deposit.amount,
             signature: deposit.signature)):
         continue
+
       add_builder_to_registry(
         state, bucket_sorted_builders[], deposit.pubkey,
         PAYLOAD_BUILDER_VERSION,

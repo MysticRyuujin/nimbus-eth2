@@ -62,6 +62,8 @@ type
     columnSidecarFullQueue*: AsyncEventQueue[ref fulu.DataColumnSidecar]
     finalQueue*: AsyncEventQueue[FinalizationInfoObject]
     fastConfirmationQueue*: AsyncEventQueue[FastConfirmationInfoObject]
+    payloadAttributesQueue*: AsyncEventQueue[EventPayloadAttributesObject]
+    proposerPreferencesQueue*: AsyncEventQueue[EventProposerPreferencesObject]
     reorgQueue*: AsyncEventQueue[ReorgInfoObject]
     contribQueue*: AsyncEventQueue[SignedContributionAndProof]
     finUpdateQueue*: AsyncEventQueue[
@@ -210,6 +212,10 @@ func init*(T: type EventBus): T =
       newAsyncEventQueue[FinalizationInfoObject](),
     fastConfirmationQueue:
       newAsyncEventQueue[FastConfirmationInfoObject](),
+    payloadAttributesQueue:
+      newAsyncEventQueue[EventPayloadAttributesObject](),
+    proposerPreferencesQueue:
+      newAsyncEventQueue[EventProposerPreferencesObject](),
     reorgQueue:
       newAsyncEventQueue[ReorgInfoObject](),
     contribQueue:

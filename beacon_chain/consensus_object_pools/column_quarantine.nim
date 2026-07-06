@@ -356,13 +356,11 @@ proc put*[
           if isEmpty(node[].value.sidecars[index]):
             inc(res)
         res
+  if newSidecarsCount > 0:
+    q.ensureSidecarsFits(newSidecarsCount).isOkOr:
+      return
 
-  if newSidecarsCount == 0:
-    return
-
-  q.ensureSidecarsFits(newSidecarsCount).isOkOr:
-    return
-
+  var upgradedSidecars = false
   for sidecar in sidecars:
     let index = q.getIndex(sidecar.index)
     if index < 0: continue
@@ -377,6 +375,20 @@ proc put*[
           proposer_index: sidecar[].proposer_index(),
           verified: verified,
           data: sidecar)
+    elif verified and isLoaded(node[].value.sidecars[index]) and
+        not node[].value.sidecars[index].verified:
+      node[].value.sidecars[index] =
+        SidecarHolder[A](
+          kind: SidecarHolderKind.Loaded,
+          slot: sidecar[].slot(),
+          index: uint64(sidecar[].index),
+          proposer_index: sidecar[].proposer_index(),
+          verified: true,
+          data: sidecar)
+      upgradedSidecars = true
+
+  if newSidecarsCount == 0 and not upgradedSidecars:
+    return
 
   q.memSidecarsCount += newSidecarsCount
   blob_quarantine_memory_slots_occupied.set(
@@ -509,6 +521,18 @@ func hasSidecar*(
 ): bool =
   hasSidecarImpl(blockRoot, index)
 
+func hasVerifiedSidecar*(
+    quarantine: SomeColumnQuarantine,
+    blockRoot: Eth2Digest,
+    index: ColumnIndex
+): bool =
+  let node = quarantine.roots.getOrDefault(blockRoot)
+  if isNil(node):
+    return false
+  let idx = quarantine.getIndex(index)
+  (idx != -1) and not node[].value.sidecars[idx].isEmpty() and
+    node[].value.sidecars[idx].verified
+
 func hasSidecars*(
     quarantine: SomeColumnQuarantine,
     blockRoot: Eth2Digest,
@@ -551,7 +575,7 @@ proc popSidecars*[
   ## If some of the column sidecars are missing Opt.none() is returned.
   ## Note: Blocks should be checked for sidecars count first, otherwise
   ## result of this function would be always Opt.none().
-  var node = quarantine.roots.getOrDefault(blockRoot)
+  let node = quarantine.roots.getOrDefault(blockRoot)
   if isNil(node):
     return Opt.none(seq[ref A])
 
